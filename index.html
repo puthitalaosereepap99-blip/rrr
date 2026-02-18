@@ -1,0 +1,291 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Calendar, Clock, MessageSquare, Send, Plus, Trash2, CalendarDays, ExternalLink, Loader2 } from 'lucide-react';
+
+const App = () => {
+  const [messages, setMessages] = useState([
+    { id: 1, role: 'bot', text: 'สวัสดีครับ! ผมคือผู้ช่วยนัดหมายอัจฉริยะ คุณต้องการให้นัดหมายเรื่องอะไร หรืออยากให้ผมช่วยแนะนำเวลาที่เหมาะสมไหมครับ?' }
+  ]);
+  const [input, setInput] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const [appointments, setAppointments] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  // Initial Form State
+  const [formData, setFormData] = useState({
+    title: '',
+    date: '',
+    time: '',
+    description: ''
+  });
+
+  const apiKey = ""; // API Key provided by environment
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isTyping]);
+
+  // Exponential backoff API call
+  const fetchGeminiResponse = async (userPrompt) => {
+    const systemInstruction = `You are a helpful Calendar Assistant. Help users plan their appointments. 
+    Give advice on scheduling, suggest durations for different tasks (e.g., 30 mins for coffee, 1 hour for meeting). 
+    Keep responses concise and in Thai language. If user wants to schedule, encourage them to use the form.`;
+
+    const fetchWithRetry = async (retries = 0) => {
+      try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: userPrompt }] }],
+            systemInstruction: { parts: [{ text: systemInstruction }] }
+          })
+        });
+
+        if (!response.ok) throw new Error('API Error');
+        const data = await response.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text;
+      } catch (err) {
+        if (retries < 5) {
+          const delay = Math.pow(2, retries) * 1000;
+          await new Promise(res => setTimeout(res, delay));
+          return fetchWithRetry(retries + 1);
+        }
+        throw err;
+      }
+    };
+
+    return fetchWithRetry();
+  };
+
+  const handleSend = async () => {
+    if (!input.trim()) return;
+
+    const userMsg = { id: Date.now(), role: 'user', text: input };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    setIsTyping(true);
+
+    try {
+      const responseText = await fetchGeminiResponse(input);
+      const botMsg = { id: Date.now() + 1, role: 'bot', text: responseText };
+      setMessages(prev => [...prev, botMsg]);
+    } catch (error) {
+      setMessages(prev => [...prev, { id: Date.now() + 1, role: 'bot', text: 'ขออภัยครับ เกิดข้อผิดพลาดในการเชื่อมต่อ กรุณาลองใหม่อีกครั้ง' }]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const handleAddAppointment = (e) => {
+    e.preventDefault();
+    if (!formData.title || !formData.date || !formData.time) return;
+
+    const newAppointment = {
+      ...formData,
+      id: Date.now()
+    };
+    setAppointments(prev => [...prev, newAppointment]);
+    setFormData({ title: '', date: '', time: '', description: '' });
+    setShowForm(false);
+    
+    setMessages(prev => [...prev, { 
+      id: Date.now() + 2, 
+      role: 'bot', 
+      text: `บันทึกการนัดหมาย "${formData.title}" เรียบร้อยแล้วครับ! คุณสามารถกดดูรายการในแถบรายการนัดหมายได้เลย` 
+    }]);
+  };
+
+  const deleteAppointment = (id) => {
+    setAppointments(prev => prev.filter(app => app.id !== id));
+  };
+
+  const generateGoogleCalendarUrl = (app) => {
+    const title = encodeURIComponent(app.title);
+    const details = encodeURIComponent(app.description || '');
+    const dateStr = app.date.replace(/-/g, '');
+    const timeStr = app.time.replace(/:/g, '');
+    // Simple 1-hour duration for preview
+    const start = `${dateStr}T${timeStr}00`;
+    const end = `${dateStr}T${(parseInt(app.time.split(':')[0]) + 1).toString().padStart(2, '0')}${app.time.split(':')[1]}00`;
+    return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-50 font-sans">
+      {/* Header */}
+      <header className="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm">
+        <div className="flex items-center gap-2">
+          <div className="bg-blue-600 p-2 rounded-lg">
+            <Calendar className="text-white" size={24} />
+          </div>
+          <h1 className="text-xl font-bold text-slate-800">Calendar Assistant</h1>
+        </div>
+        <button 
+          onClick={() => setShowForm(!showForm)}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-full transition-all text-sm font-medium"
+        >
+          {showForm ? <MessageSquare size={18} /> : <Plus size={18} />}
+          {showForm ? 'กลับไปที่แชท' : 'นัดหมายใหม่'}
+        </button>
+      </header>
+
+      <main className="flex-1 overflow-hidden flex flex-col md:flex-row max-w-6xl mx-auto w-full p-4 gap-4">
+        {/* Chat Section */}
+        <div className={`flex-1 flex flex-col bg-white rounded-2xl shadow-sm border overflow-hidden ${showForm ? 'hidden md:flex' : 'flex'}`}>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {messages.map((m) => (
+              <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[80%] p-3 rounded-2xl ${
+                  m.role === 'user' 
+                  ? 'bg-blue-600 text-white rounded-tr-none' 
+                  : 'bg-slate-100 text-slate-800 rounded-tl-none'
+                }`}>
+                  <p className="text-sm whitespace-pre-wrap">{m.text}</p>
+                </div>
+              </div>
+            ))}
+            {isTyping && (
+              <div className="flex justify-start">
+                <div className="bg-slate-100 p-3 rounded-2xl rounded-tl-none flex items-center gap-2 text-slate-400">
+                  <Loader2 size={16} className="animate-spin" />
+                  <span className="text-xs font-medium">Assistant กำลังพิมพ์...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Chat Input */}
+          {!showForm && (
+            <div className="p-4 border-t bg-slate-50">
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+                  placeholder="ถามคำแนะนำการนัดหมายที่นี่..."
+                  className="flex-1 bg-white border rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button 
+                  onClick={handleSend}
+                  disabled={isTyping}
+                  className="bg-blue-600 p-2 rounded-full text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  <Send size={20} />
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Form or List Section */}
+        <div className={`w-full md:w-80 flex flex-col gap-4 ${showForm ? 'flex' : 'hidden md:flex'}`}>
+          {/* Appointment Form */}
+          {showForm && (
+            <div className="bg-white p-5 rounded-2xl shadow-sm border">
+              <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                <CalendarDays size={20} className="text-blue-600" />
+                ระบุรายละเอียดนัด
+              </h2>
+              <form onSubmit={handleAddAppointment} className="space-y-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 uppercase">หัวข้อ</label>
+                  <input 
+                    required
+                    className="w-full border rounded-lg p-2 mt-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    value={formData.title}
+                    onChange={e => setFormData({...formData, title: e.target.value})}
+                    placeholder="เช่น ประชุมทีมประจำสัปดาห์"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500 uppercase">วันที่</label>
+                    <input 
+                      required
+                      type="date"
+                      className="w-full border rounded-lg p-2 mt-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={formData.date}
+                      onChange={e => setFormData({...formData, date: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500 uppercase">เวลา</label>
+                    <input 
+                      required
+                      type="time"
+                      className="w-full border rounded-lg p-2 mt-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={formData.time}
+                      onChange={e => setFormData({...formData, time: e.target.value})}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 uppercase">รายละเอียด (ระบุได้)</label>
+                  <textarea 
+                    rows="2"
+                    className="w-full border rounded-lg p-2 mt-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    value={formData.description}
+                    onChange={e => setFormData({...formData, description: e.target.value})}
+                  />
+                </div>
+                <button 
+                  type="submit"
+                  className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 rounded-lg transition-colors text-sm shadow-md shadow-green-100"
+                >
+                  ยืนยันการนัดหมาย
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* List of Appointments */}
+          <div className="flex-1 bg-white p-5 rounded-2xl shadow-sm border overflow-hidden flex flex-col">
+            <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <Clock size={20} className="text-blue-600" />
+              รายการนัดหมาย
+            </h2>
+            <div className="flex-1 overflow-y-auto space-y-3">
+              {appointments.length === 0 ? (
+                <p className="text-slate-400 text-xs text-center italic py-10">ยังไม่มีการนัดหมาย</p>
+              ) : (
+                appointments.map(app => (
+                  <div key={app.id} className="group relative bg-slate-50 border border-slate-100 p-3 rounded-xl hover:border-blue-200 transition-all">
+                    <button 
+                      onClick={() => deleteAppointment(app.id)}
+                      className="absolute top-2 right-2 text-slate-300 hover:text-red-500 md:opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                    <h3 className="text-sm font-bold text-slate-800 pr-5">{app.title}</h3>
+                    <p className="text-xs text-blue-600 font-medium mt-1">{app.date} • {app.time}</p>
+                    <a 
+                      href={generateGoogleCalendarUrl(app)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-2 inline-flex items-center gap-1 text-[10px] bg-white border border-slate-200 px-2 py-1 rounded hover:bg-slate-100 text-slate-600"
+                    >
+                      <ExternalLink size={10} /> เพิ่มใน Google Calendar
+                    </a>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <footer className="bg-slate-100 py-3 text-center text-[10px] text-slate-400">
+        AI-Powered Calendar Assistant • สร้างขึ้นเพื่อช่วยจัดการเวลาของคุณ
+      </footer>
+    </div>
+  );
+};
+
+export default App;
